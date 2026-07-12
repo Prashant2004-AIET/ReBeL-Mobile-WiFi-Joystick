@@ -1,0 +1,171 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>ReBeL Joystick</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; user-select: none; }
+  body {
+    margin: 0; padding: 16px; background: #111; color: #eee;
+    font-family: -apple-system, system-ui, sans-serif; touch-action: none;
+  }
+  h1 { font-size: 18px; text-align: center; margin: 4px 0 16px; color: #9adf9a; }
+  .axes {
+    display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; margin-bottom: 20px;
+  }
+  .axis-btn {
+    padding: 10px 0; border-radius: 8px; border: 2px solid #444;
+    background: #222; color: #ccc; font-weight: bold; font-size: 14px;
+  }
+  .axis-btn.active { background: #2d7a2d; border-color: #4caf50; color: #fff; }
+
+  .jog {
+    height: 45vh; border-radius: 16px; background: #1b1b1b; border: 2px solid #333;
+    display: flex; align-items: center; justify-content: center; position: relative;
+    margin-bottom: 16px;
+  }
+  .jog-track {
+    width: 70px; height: 90%; border-radius: 35px; background: #262626; position: relative;
+  }
+  .jog-handle {
+    width: 66px; height: 66px; border-radius: 50%; background: #4caf50;
+    position: absolute; left: 2px; top: 50%; transform: translateY(-50%);
+    box-shadow: 0 0 12px rgba(76,175,80,.6);
+  }
+  .jog-mid { position: absolute; width: 100%; top: 50%; border-top: 1px dashed #444; }
+  .readout { text-align: center; font-size: 15px; color: #9adf9a; margin-bottom: 12px; }
+
+  .speed-row { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; }
+  .speed-row input { flex: 1; }
+
+  .stop-btn {
+    width: 100%; padding: 18px; font-size: 20px; font-weight: bold; color: #fff;
+    background: #c62828; border: none; border-radius: 12px; letter-spacing: 1px;
+  }
+  .status { text-align: center; margin-top: 10px; font-size: 13px; color: #888; }
+</style>
+</head>
+<body>
+
+<h1>ReBeL Joint Jog</h1>
+
+<div class="axes" id="axes"></div>
+
+<div class="readout" id="readout">Axis 1 &middot; 0%</div>
+
+<div class="jog" id="jogZone">
+  <div class="jog-track">
+    <div class="jog-mid"></div>
+    <div class="jog-handle" id="handle"></div>
+  </div>
+</div>
+
+<div class="speed-row">
+  <label style="font-size:14px;color:#aaa;">Max speed</label>
+  <input type="range" id="speedCap" min="5" max="100" value="15">
+  <span id="speedCapLabel">15%</span>
+</div>
+
+<button class="stop-btn" id="stopBtn">STOP</button>
+<div class="status" id="status">connecting...</div>
+
+<script>
+const socket = io();
+let selectedAxis = 0;
+let speedCap = 15;
+
+const axesDiv = document.getElementById('axes');
+for (let i = 0; i < 6; i++) {
+  const b = document.createElement('button');
+  b.className = 'axis-btn' + (i === 0 ? ' active' : '');
+  b.textContent = 'J' + (i + 1);
+  b.addEventListener('click', () => {
+    selectedAxis = i;
+    document.querySelectorAll('.axis-btn').forEach(el => el.classList.remove('active'));
+    b.classList.add('active');
+    updateReadout(0);
+  });
+  axesDiv.appendChild(b);
+}
+
+const speedCapEl = document.getElementById('speedCap');
+speedCapEl.addEventListener('input', () => {
+  speedCap = parseInt(speedCapEl.value, 10);
+  document.getElementById('speedCapLabel').textContent = speedCap + '%';
+});
+
+const jogZone = document.getElementById('jogZone');
+const handle = document.getElementById('handle');
+const track = jogZone.querySelector('.jog-track');
+let dragging = false;
+
+function trackMetrics() {
+  const rect = track.getBoundingClientRect();
+  return { top: rect.top, height: rect.height, mid: rect.top + rect.height / 2 };
+}
+
+function setHandle(fraction) {
+  const { height } = trackMetrics();
+  const usable = (height - 66) / 2;
+  handle.style.top = `calc(50% - ${fraction * usable}px)`;
+}
+
+function updateReadout(pct) {
+  document.getElementById('readout').textContent =
+    `Axis ${selectedAxis + 1} \u00b7 ${pct.toFixed(0)}%`;
+}
+
+function sendJog(value) {
+  socket.emit('jog', { axis: selectedAxis, value: value });
+}
+
+function handlePointer(clientY) {
+  const { height, mid } = trackMetrics();
+  let fraction = (mid - clientY) / (height / 2 - 33);
+  fraction = Math.max(-1, Math.min(1, fraction));
+  setHandle(fraction);
+  const value = fraction * speedCap;
+  updateReadout(value);
+  sendJog(value);
+}
+
+function resetHandle() {
+  setHandle(0);
+  updateReadout(0);
+  socket.emit('stop');
+}
+
+jogZone.addEventListener('pointerdown', (e) => {
+  dragging = true;
+  jogZone.setPointerCapture(e.pointerId);
+  handlePointer(e.clientY);
+});
+jogZone.addEventListener('pointermove', (e) => {
+  if (!dragging) return;
+  handlePointer(e.clientY);
+});
+jogZone.addEventListener('pointerup', () => { dragging = false; resetHandle(); });
+jogZone.addEventListener('pointercancel', () => { dragging = false; resetHandle(); });
+
+setInterval(() => {
+  if (dragging) {
+    const rectHandle = handle.getBoundingClientRect();
+    const currentY = rectHandle.top + rectHandle.height / 2;
+    handlePointer(currentY);
+  }
+}, 150);
+
+document.getElementById('stopBtn').addEventListener('click', () => {
+  dragging = false;
+  resetHandle();
+});
+
+socket.on('connect', () => { document.getElementById('status').textContent = 'connected'; });
+socket.on('disconnect', () => { document.getElementById('status').textContent = 'disconnected -- robot will auto-stop'; });
+
+setHandle(0);
+</script>
+</body>
+</html>
